@@ -1,0 +1,370 @@
+
+# ─── INSTALL REQUIRED PACKAGES ────────────────────────────────
+# pip install scikit-learn numpy matplotlib seaborn Pillow
+# pip install tensorflow tensorflow-datasets   ← for Option 1
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import seaborn as sns
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    classification_report, confusion_matrix,
+    accuracy_score, ConfusionMatrixDisplay
+)
+from sklearn.decomposition import PCA
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
+from PIL import Image
+import warnings
+warnings.filterwarnings("ignore")
+
+# ──────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ──────────────────────────────────────────────────────────────
+IMG_SIZE    = (64, 64)          # Resize all images to this
+N_SAMPLES   = 1000              # Samples per class (increase for better accuracy)
+N_PCA       = 100               # PCA components (dimensionality reduction)
+TEST_SPLIT  = 0.2               # 80% train, 20% test
+RANDOM_SEED = 42
+
+np.random.seed(RANDOM_SEED)
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 1 — LOAD DATASET
+# ══════════════════════════════════════════════════════════════
+
+def load_from_tensorflow_datasets(n_per_class=N_SAMPLES):
+    """
+    Auto-downloads ~800MB of cats_vs_dogs from TensorFlow Datasets.
+    No Kaggle account needed!
+    """
+    print("📦 Loading dataset via tensorflow_datasets...")
+    import tensorflow_datasets as tfds
+
+    ds, info = tfds.load(
+        "cats_vs_dogs",
+        split="train",
+        with_info=True,
+        shuffle_files=True
+    )
+
+    images, labels = [], []
+    cat_count = dog_count = 0
+
+    for sample in tfds.as_numpy(ds):
+        img = sample["image"]
+        lbl = int(sample["label"])          # 0=cat, 1=dog
+
+        if lbl == 0 and cat_count < n_per_class:
+            images.append(img); labels.append(0); cat_count += 1
+        elif lbl == 1 and dog_count < n_per_class:
+            images.append(img); labels.append(1); dog_count += 1
+
+        if cat_count >= n_per_class and dog_count >= n_per_class:
+            break
+
+    print(f"   ✅ Loaded {cat_count} cats + {dog_count} dogs")
+    return np.array(images), np.array(labels)
+
+
+def load_from_kaggle_folder(data_dir="./dogs-vs-cats/train"):
+    """
+    Loads from the Kaggle Dogs vs Cats folder structure.
+    Expects files named cat.0.jpg, cat.1.jpg, dog.0.jpg, etc.
+
+    Download: https://www.kaggle.com/c/dogs-vs-cats/data
+    """
+    print(f"📂 Loading from Kaggle folder: {data_dir}")
+    images, labels = [], []
+
+    files = [f for f in os.listdir(data_dir) if f.endswith((".jpg", ".jpeg", ".png"))]
+    np.random.shuffle(files)
+
+    for fname in files:
+        if len(images) >= N_SAMPLES * 2:
+            break
+        lbl = 0 if fname.startswith("cat") else 1
+        img_path = os.path.join(data_dir, fname)
+        try:
+            img = np.array(Image.open(img_path).convert("RGB"))
+            images.append(img)
+            labels.append(lbl)
+        except Exception:
+            pass
+
+    print(f"   ✅ Loaded {sum(1 for l in labels if l==0)} cats + {sum(1 for l in labels if l==1)} dogs")
+    return np.array(images, dtype=object), np.array(labels)
+
+
+def generate_synthetic_demo(n_per_class=200):
+    """
+    DEMO MODE — no internet needed.
+    Creates synthetic images: cats ≈ warm tones, dogs ≈ cool tones.
+    Use this only to verify the pipeline works end-to-end.
+    """
+    print("🎭 Generating synthetic demo data (no real images)...")
+    images, labels = [], []
+
+    for _ in range(n_per_class):       # "Cats" — warm orange-ish
+        img = np.random.randint(120, 255, (*IMG_SIZE, 3), dtype=np.uint8)
+        img[:, :, 2] = np.random.randint(20, 100, IMG_SIZE, dtype=np.uint8)
+        images.append(img); labels.append(0)
+
+    for _ in range(n_per_class):       # "Dogs" — cool blue-ish
+        img = np.random.randint(20, 100, (*IMG_SIZE, 3), dtype=np.uint8)
+        img[:, :, 2] = np.random.randint(120, 255, IMG_SIZE, dtype=np.uint8)
+        images.append(img); labels.append(1)
+
+    print(f"   ✅ Created {n_per_class} synthetic cats + {n_per_class} synthetic dogs")
+    return np.array(images), np.array(labels)
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 2 — PREPROCESSING
+# ══════════════════════════════════════════════════════════════
+
+def preprocess_images(images, target_size=IMG_SIZE):
+    """Resize → flatten → normalize to [0,1]"""
+    print(f"\n🔧 Preprocessing {len(images)} images → {target_size}...")
+    flat = []
+    for img in images:
+        if isinstance(img, np.ndarray) and img.ndim == 3:
+            pil = Image.fromarray(img.astype(np.uint8)).resize(target_size)
+            flat.append(np.array(pil).flatten())
+        else:
+            flat.append(np.zeros(target_size[0] * target_size[1] * 3))
+
+    X = np.array(flat, dtype=np.float32) / 255.0
+    print(f"   Feature shape: {X.shape}")
+    return X
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 3 — TRAIN SVM
+# ══════════════════════════════════════════════════════════════
+
+def train_svm(X_train, y_train, use_grid_search=False):
+    """
+    Pipeline: StandardScaler → PCA → SVM (RBF kernel)
+    Optional grid search for hyperparameter tuning.
+    """
+    print("\n🤖 Training SVM classifier...")
+
+    pipeline = Pipeline([
+        ("scaler", StandardScaler()),
+        ("pca",    PCA(n_components=N_PCA, random_state=RANDOM_SEED)),
+        ("svm",    SVC(kernel="rbf", C=10, gamma="scale",
+                       probability=True, random_state=RANDOM_SEED))
+    ])
+
+    if use_grid_search:
+        print("   🔍 Running GridSearchCV (this takes a few minutes)...")
+        param_grid = {
+            "svm__C":     [1, 10, 100],
+            "svm__gamma": ["scale", "auto", 0.001],
+        }
+        pipeline = GridSearchCV(pipeline, param_grid, cv=3,
+                                scoring="accuracy", n_jobs=-1, verbose=1)
+
+    pipeline.fit(X_train, y_train)
+
+    if use_grid_search:
+        print(f"   Best params: {pipeline.best_params_}")
+
+    print("   ✅ Training complete!")
+    return pipeline
+
+
+# ══════════════════════════════════════════════════════════════
+# STEP 4 — EVALUATE & VISUALIZE
+# ══════════════════════════════════════════════════════════════
+
+def evaluate_and_plot(model, X_test, y_test, raw_images_test):
+    """Full evaluation with beautiful plots saved to disk."""
+    print("\n📊 Evaluating model...")
+
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+
+    acc = accuracy_score(y_test, y_pred)
+    cm  = confusion_matrix(y_test, y_pred)
+    report = classification_report(y_test, y_pred,
+                                   target_names=["Cat 🐱", "Dog 🐶"])
+
+    print(f"\n{'='*55}")
+    print(f"  ACCURACY : {acc*100:.2f}%")
+    print(f"{'='*55}")
+    print(report)
+
+    # ── FIGURE 1: Confusion Matrix + Report Bar ────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.patch.set_facecolor("#0f0f1a")
+
+    # Confusion matrix
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm,
+                                  display_labels=["Cat", "Dog"])
+    disp.plot(ax=axes[0], colorbar=False,
+              cmap=sns.color_palette("magma", as_cmap=True))
+    axes[0].set_title("Confusion Matrix", color="white", fontsize=14, pad=12)
+    axes[0].set_facecolor("#1a1a2e")
+    axes[0].tick_params(colors="white")
+    axes[0].xaxis.label.set_color("white")
+    axes[0].yaxis.label.set_color("white")
+    for text in axes[0].texts:
+        text.set_color("white")
+
+    # Metrics bar chart
+    from sklearn.metrics import precision_score, recall_score, f1_score
+    metrics = {
+        "Accuracy":  acc,
+        "Precision": precision_score(y_test, y_pred, average="macro"),
+        "Recall":    recall_score(y_test, y_pred, average="macro"),
+        "F1-Score":  f1_score(y_test, y_pred, average="macro"),
+    }
+    colors = ["#e94560", "#f5a623", "#7ed321", "#4a90e2"]
+    bars = axes[1].bar(metrics.keys(), metrics.values(), color=colors, width=0.5)
+    axes[1].set_ylim(0, 1.1)
+    axes[1].set_facecolor("#1a1a2e")
+    axes[1].tick_params(colors="white")
+    axes[1].set_title("Performance Metrics", color="white", fontsize=14, pad=12)
+    for bar, val in zip(bars, metrics.values()):
+        axes[1].text(bar.get_x() + bar.get_width()/2, val + 0.02,
+                     f"{val:.3f}", ha="center", color="white", fontweight="bold")
+
+    fig.suptitle(f"SVM Cat vs Dog Classifier  |  Accuracy: {acc*100:.2f}%",
+                 color="white", fontsize=16, y=1.02)
+    plt.tight_layout()
+    plt.savefig("results_metrics.png", dpi=150, bbox_inches="tight",
+                facecolor="#0f0f1a")
+    print("   💾 Saved: results_metrics.png")
+    plt.show()
+
+    # ── FIGURE 2: Sample Predictions ──────────────────────────
+    n_show = min(20, len(y_test))
+    indices = np.random.choice(len(y_test), n_show, replace=False)
+
+    fig = plt.figure(figsize=(20, 8))
+    fig.patch.set_facecolor("#0f0f1a")
+    fig.suptitle("Sample Predictions — Cat vs Dog SVM",
+                 color="white", fontsize=18, fontweight="bold", y=1.01)
+
+    for i, idx in enumerate(indices):
+        ax = fig.add_subplot(2, 10, i + 1)
+        img = raw_images_test[idx]
+        if img.shape == (IMG_SIZE[0], IMG_SIZE[1], 3):
+            ax.imshow(img.astype(np.uint8))
+        else:
+            ax.imshow(img.reshape(*IMG_SIZE, 3).astype(np.uint8)
+                      if img.size == IMG_SIZE[0]*IMG_SIZE[1]*3 else np.zeros((*IMG_SIZE,3), dtype=np.uint8))
+
+        true_lbl = "Cat" if y_test[idx] == 0 else "Dog"
+        pred_lbl = "Cat" if y_pred[idx]  == 0 else "Dog"
+        correct  = (y_test[idx] == y_pred[idx])
+
+        border_color = "#7ed321" if correct else "#e94560"
+        ax.set_title(f"T:{true_lbl}\nP:{pred_lbl}",
+                     color=border_color, fontsize=7, pad=2)
+        ax.axis("off")
+        for spine in ax.spines.values():
+            spine.set_edgecolor(border_color)
+            spine.set_linewidth(2)
+
+    plt.tight_layout()
+    plt.savefig("results_predictions.png", dpi=150, bbox_inches="tight",
+                facecolor="#0f0f1a")
+    print("   💾 Saved: results_predictions.png")
+    plt.show()
+
+    # ── FIGURE 3: PCA 2D Scatter ──────────────────────────────
+    print("\n🔬 Generating PCA visualization...")
+    scaler_only = StandardScaler()
+    X_scaled = scaler_only.fit_transform(X_test)
+    pca2 = PCA(n_components=2, random_state=RANDOM_SEED)
+    X_2d = pca2.fit_transform(X_scaled)
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    fig.patch.set_facecolor("#0f0f1a")
+    ax.set_facecolor("#1a1a2e")
+
+    scatter = ax.scatter(
+        X_2d[:, 0], X_2d[:, 1],
+        c=y_test, cmap="RdYlBu", alpha=0.7, s=40,
+        edgecolors="none"
+    )
+    legend = ax.legend(*scatter.legend_elements(),
+                       labels=["Cat 🐱", "Dog 🐶"],
+                       loc="upper right", framealpha=0.3)
+    for text in legend.get_texts():
+        text.set_color("white")
+    legend.get_frame().set_facecolor("#0f0f1a")
+
+    ax.set_title("PCA 2D Projection of Image Features",
+                 color="white", fontsize=14, pad=12)
+    ax.tick_params(colors="white")
+    ax.set_xlabel("PC 1", color="white")
+    ax.set_ylabel("PC 2", color="white")
+
+    plt.tight_layout()
+    plt.savefig("results_pca.png", dpi=150, bbox_inches="tight",
+                facecolor="#0f0f1a")
+    print("   💾 Saved: results_pca.png")
+    plt.show()
+
+    return acc, cm
+
+
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
+
+def main():
+    print("=" * 55)
+    print("  SVM CAT vs DOG CLASSIFIER — TASK 03")
+    print("  SkillCraft Technology Internship")
+    print("=" * 55)
+
+    # ─── CHOOSE YOUR DATASET ────────────────────────────────
+    # Uncomment ONE of the three options below:
+
+    # ✅ OPTION 1 — Best quality, auto-downloads (recommended)
+    # images, labels = load_from_tensorflow_datasets(N_SAMPLES)
+
+    # ✅ OPTION 2 — Kaggle dataset (download manually first)
+    # images, labels = load_from_kaggle_folder("./dogs-vs-cats/train")
+
+    # ✅ OPTION 3 — Instant demo (no download needed)
+    images, labels = generate_synthetic_demo(200)
+
+    # ─── PREPROCESS ─────────────────────────────────────────
+    X = preprocess_images(images)
+    y = labels
+
+    # ─── TRAIN / TEST SPLIT ──────────────────────────────────
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(
+        X, y, np.arange(len(y)),
+        test_size=TEST_SPLIT, random_state=RANDOM_SEED, stratify=y
+    )
+    raw_images_test = images[idx_test]
+
+    print(f"\n📐 Dataset split:")
+    print(f"   Train: {len(X_train)} samples | Test: {len(X_test)} samples")
+
+    # ─── TRAIN ───────────────────────────────────────────────
+    model = train_svm(X_train, y_train, use_grid_search=False)
+
+    # ─── EVALUATE ────────────────────────────────────────────
+    acc, cm = evaluate_and_plot(model, X_test, y_test, raw_images_test)
+
+    print("\n✅ ALL DONE!")
+    print(f"   Final Accuracy: {acc*100:.2f}%")
+    print("   Output files: results_metrics.png, results_predictions.png, results_pca.png")
+    print("=" * 55)
+
+
+if __name__ == "__main__":
+    main()
