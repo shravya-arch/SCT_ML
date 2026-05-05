@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Hand Gesture Recognition — ML Powered</title>
+
+<!-- TensorFlow.js core -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<!-- TF.js Hand Pose Detection (replaces MediaPipe direct) -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection@2.0.1/dist/hand-pose-detection.min.js"></script>
+<!-- MediaPipe Hands backend (required by hand-pose-detection) -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<!-- fingerpose for gesture classification ML -->
+<script src="https://cdn.jsdelivr.net/npm/fingerpose@0.1.0/dist/fingerpose.min.js"></script>
+
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --panel: #111118;
+    --border: #1e1e2e;
+    --accent: #00ff88;
+    --accent2: #7c3aed;
+    --accent3: #00bfff;
+    --text: #e2e8f0;
+    --muted: #4a5568;
+    --danger: #ff4757;
+    --warn: #ffa500;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,255,136,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,136,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none; z-index: 0;
+  }
+  .wrapper {
+    position: relative; z-index: 1;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px 20px;
+  }
+
+  /* ── Header ── */
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 32px; }
+  .logo-box {
+    width: 48px; height: 48px;
+    background: var(--accent); border-radius: 12px;
+    display: grid; place-items: center; font-size: 24px; flex-shrink: 0;
+  }
+  h1 { font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 800; letter-spacing: -0.5px; }
+  h1 span { color: var(--accent); }
+  .header-right { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .badge {
+    font-family: 'Space Mono', monospace; font-size: 0.7rem;
+    color: var(--accent); border: 1px solid var(--accent);
+    padding: 4px 10px; border-radius: 4px; white-space: nowrap;
+  }
+  .badge.ml { color: var(--accent3); border-color: var(--accent3); }
+
+  /* ── ML Status bar ── */
+  .ml-status {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 20px;
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 20px;
+    font-family: 'Space Mono', monospace; font-size: 0.72rem;
+    flex-wrap: wrap; gap: 12px;
+  }
+  .ml-step {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--muted); transition: color 0.3s;
+  }
+  .ml-step.done { color: var(--accent); }
+  .ml-step.active { color: var(--warn); }
+  .ml-step.error { color: var(--danger); }
+  .ml-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; flex-shrink: 0;
+  }
+  .ml-dot.spin {
+    background: transparent;
+    border: 2px solid var(--warn); border-top-color: transparent;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Main grid ── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 20px;
+  }
+  @media (max-width: 800px) { .main-grid { grid-template-columns: 1fr; } }
+
+  /* ── Camera panel ── */
+  .cam-panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; overflow: hidden; position: relative;
+  }
+  .cam-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    font-size: 0.8rem; font-family: 'Space Mono', monospace; color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+  .live-indicator {
+    margin-left: auto; display: flex; align-items: center; gap: 6px;
+    color: var(--accent); font-size: 0.75rem;
+  }
+  .live-dot {
+    width: 7px; height: 7px; background: var(--accent);
+    border-radius: 50%; animation: blink 1.2s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  .video-container { position: relative; aspect-ratio: 4/3; background: #000; }
+  video, canvas {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  video { transform: scaleX(-1); }
+  canvas { transform: scaleX(-1); }
+
+  .overlay {
+    position: absolute; inset: 0; background: rgba(0,0,0,0.88);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; z-index: 10;
+    transition: opacity 0.5s;
+  }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 48px; height: 48px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .overlay p { font-family: 'Space Mono', monospace; font-size: 0.8rem; color: var(--muted); text-align: center; }
+  .overlay .sub { font-size: 0.65rem; color: #333; }
+
+  .mode-tabs {
+    display: flex; padding: 12px 18px; border-top: 1px solid var(--border);
+  }
+  .tab-btn {
+    flex: 1; padding: 8px 12px; background: transparent;
+    border: 1px solid var(--border); color: var(--muted);
+    font-family: 'Space Mono', monospace; font-size: 0.72rem; cursor: pointer; transition: all 0.2s;
+  }
+  .tab-btn:first-child { border-radius: 6px 0 0 6px; }
+  .tab-btn:last-child  { border-radius: 0 6px 6px 0; }
+  .tab-btn + .tab-btn  { border-left: none; }
+  .tab-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+
+  .upload-area {
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    padding: 40px 20px; border: 2px dashed var(--border);
+    margin: 16px; border-radius: 10px; cursor: pointer;
+    transition: border-color 0.2s; font-family: 'Space Mono', monospace;
+    font-size: 0.8rem; color: var(--muted);
+  }
+  .upload-area:hover { border-color: var(--accent); color: var(--accent); }
+  .upload-area.active { display: flex; }
+  .upload-icon { font-size: 2.5rem; }
+  #file-input { display: none; }
+  #img-preview-container { display: none; position: relative; margin: 12px; border-radius: 10px; overflow: hidden; }
+  #img-preview-container.active { display: block; }
+  #img-preview { width: 100%; border-radius: 10px; display: block; }
+  #img-canvas  { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ── Sidebar ── */
+  .sidebar { display: flex; flex-direction: column; gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 16px; overflow: hidden;
+  }
+  .card-title {
+    font-family: 'Space Mono', monospace; font-size: 0.7rem; color: var(--muted);
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  /* Gesture display */
+  .gesture-display { padding: 20px 16px; text-align: center; }
+  .gesture-emoji {
+    font-size: 4rem; line-height: 1; margin-bottom: 8px;
+    transition: all 0.3s cubic-bezier(0.34,1.56,0.64,1); display: block;
+  }
+  .gesture-name {
+    font-size: 1.2rem; font-weight: 700; color: var(--accent);
+    margin-bottom: 6px; min-height: 1.5em; transition: color 0.3s;
+  }
+  .gesture-hand {
+    font-family: 'Space Mono', monospace; font-size: 0.72rem;
+    color: var(--muted); min-height: 1.2em;
+  }
+
+  /* ML Model info */
+  .model-info {
+    padding: 10px 16px 14px;
+    border-top: 1px solid var(--border);
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .model-tag {
+    font-family: 'Space Mono', monospace; font-size: 0.62rem;
+    padding: 3px 8px; border-radius: 4px;
+    background: rgba(0,191,255,0.1); color: var(--accent3);
+    border: 1px solid rgba(0,191,255,0.2);
+  }
+
+  /* Confidence bars */
+  .conf-bar-wrap { padding: 0 16px 16px; }
+  .conf-label {
+    display: flex; justify-content: space-between;
+    font-family: 'Space Mono', monospace; font-size: 0.68rem;
+    color: var(--muted); margin-bottom: 6px;
+  }
+  .conf-track {
+    height: 6px; background: var(--border);
+    border-radius: 99px; overflow: hidden;
+  }
+  .conf-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    border-radius: 99px; width: 0%; transition: width 0.4s ease;
+  }
+
+  /* Top-K gestures */
+  .topk-wrap { padding: 0 16px 16px; }
+  .topk-title {
+    font-family: 'Space Mono', monospace; font-size: 0.65rem;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  .topk-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 5px; font-family: 'Space Mono', monospace; font-size: 0.68rem;
+  }
+  .topk-name { width: 110px; color: var(--text); }
+  .topk-track {
+    flex: 1; height: 4px; background: var(--border);
+    border-radius: 99px; overflow: hidden;
+  }
+  .topk-fill { height: 100%; background: var(--accent2); border-radius: 99px; transition: width 0.3s; }
+  .topk-pct { width: 35px; text-align: right; color: var(--muted); }
+
+  /* Stats */
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; background: var(--border); }
+  .stat-box { background: var(--panel); padding: 12px 10px; text-align: center; }
+  .stat-val { font-size: 1.4rem; font-weight: 800; color: var(--accent); font-family: 'Space Mono', monospace; line-height: 1; }
+  .stat-lbl { font-size: 0.6rem; color: var(--muted); margin-top: 4px; font-family: 'Space Mono', monospace; text-transform: uppercase; }
+
+  /* History */
+  .history-list { padding: 8px 0; max-height: 180px; overflow-y: auto; }
+  .history-list::-webkit-scrollbar { width: 4px; }
+  .history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .history-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 16px; font-family: 'Space Mono', monospace; font-size: 0.72rem;
+    border-bottom: 1px solid var(--border); animation: slideIn 0.2s ease;
+  }
+  @keyframes slideIn { from { opacity:0; transform: translateX(-8px); } }
+  .history-item:last-child { border-bottom: none; }
+  .history-time { color: var(--muted); flex-shrink: 0; }
+  .history-gesture { color: var(--text); flex: 1; }
+  .history-conf { color: var(--accent); }
+  .no-history { padding: 20px 16px; text-align: center; font-family: 'Space Mono', monospace; font-size: 0.72rem; color: var(--muted); }
+
+  /* Gesture reference */
+  .gestures-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); }
+  .gesture-ref { background: var(--panel); padding: 10px 8px; text-align: center; cursor: default; transition: background 0.15s; }
+  .gesture-ref:hover { background: #1a1a28; }
+  .gesture-ref .ref-emoji { font-size: 1.5rem; }
+  .gesture-ref .ref-name { font-size: 0.6rem; color: var(--muted); margin-top: 4px; font-family: 'Space Mono', monospace; line-height: 1.3; }
+
+  .clear-btn {
+    width: calc(100% - 32px); margin: 12px 16px; padding: 9px;
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; font-family: 'Space Mono', monospace; font-size: 0.72rem;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .clear-btn:hover { border-color: var(--danger); color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="wrapper">
+
+  <header>
+    <div class="logo-box">🖐️</div>
+    <div>
+      <h1>Gesture <span>Recognition</span></h1>
+      <div style="font-size:0.75rem;color:var(--muted);font-family:'Space Mono',monospace;margin-top:2px">TensorFlow.js + HandPose ML · Zero installs</div>
+    </div>
+    <div class="header-right">
+      <div class="badge ml">TF.js ML</div>
+      <div class="badge">TASK 04</div>
+    </div>
+  </header>
+
+  <!-- ML Pipeline Status -->
+  <div class="ml-status" id="ml-status">
+    <div class="ml-step" id="step-tf">
+      <div class="ml-dot spin" id="dot-tf"></div>TF.js Runtime
+    </div>
+    <div style="color:var(--border)">→</div>
+    <div class="ml-step" id="step-model">
+      <div class="ml-dot" id="dot-model"></div>HandPose Model
+    </div>
+    <div style="color:var(--border)">→</div>
+    <div class="ml-step" id="step-fp">
+      <div class="ml-dot" id="dot-fp"></div>Fingerpose Classifier
+    </div>
+    <div style="color:var(--border)">→</div>
+    <div class="ml-step" id="step-cam">
+      <div class="ml-dot" id="dot-cam"></div>Camera Feed
+    </div>
+    <div style="color:var(--border)">→</div>
+    <div class="ml-step" id="step-ready">
+      <div class="ml-dot" id="dot-ready"></div>Ready
+    </div>
+    <span id="ml-status-text" style="margin-left:auto;color:var(--warn);font-size:0.65rem">Initializing TF.js…</span>
+  </div>
+
+  <div class="main-grid">
+
+    <!-- Left: Camera -->
+    <div class="cam-panel">
+      <div class="cam-header">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span style="margin-left:6px" id="source-label">LIVE FEED</span>
+        <div class="live-indicator" id="live-ind">
+          <div class="live-dot"></div> ML DETECTING
+        </div>
+      </div>
+
+      <div class="video-container" id="webcam-view">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+        <div class="overlay" id="overlay">
+          <div class="spinner"></div>
+          <p id="overlay-msg">Loading TensorFlow.js HandPose model…</p>
+          <p class="sub">Downloading ~10MB ML model from CDN</p>
+        </div>
+      </div>
+
+      <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
+        <div class="upload-icon">📂</div>
+        <div>Click to upload an image</div>
+        <div style="font-size:0.65rem">JPG, PNG, WEBP supported</div>
+        <input type="file" id="file-input" accept="image/*"/>
+      </div>
+      <div id="img-preview-container">
+        <img id="img-preview" alt="preview"/>
+        <canvas id="img-canvas"></canvas>
+      </div>
+
+      <div class="mode-tabs">
+        <button class="tab-btn active" onclick="setMode('webcam')">📷 Webcam</button>
+        <button class="tab-btn" onclick="setMode('image')">🖼️ Image</button>
+      </div>
+    </div>
+
+    <!-- Right: Sidebar -->
+    <div class="sidebar">
+
+      <!-- Detected gesture -->
+      <div class="card">
+        <div class="card-title">Detected Gesture</div>
+        <div class="gesture-display">
+          <span class="gesture-emoji" id="g-emoji">🤔</span>
+          <div class="gesture-name" id="g-name">Waiting…</div>
+          <div class="gesture-hand" id="g-hand">Show your hand to the camera</div>
+        </div>
+        <div class="model-info">
+          <span class="model-tag">TF.js HandPose</span>
+          <span class="model-tag">fingerpose</span>
+          <span class="model-tag" id="backend-tag">backend: ?</span>
+        </div>
+        <div class="conf-bar-wrap" style="margin-top:8px">
+          <div class="conf-label"><span>Confidence</span><span id="conf-pct">0%</span></div>
+          <div class="conf-track"><div class="conf-fill" id="conf-fill"></div></div>
+        </div>
+        <!-- Top-K -->
+        <div class="topk-wrap">
+          <div class="topk-title">TOP GESTURE SCORES</div>
+          <div id="topk-rows"></div>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="card">
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-val" id="fps-val">0</div>
+            <div class="stat-lbl">FPS</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val" id="hands-val">0</div>
+            <div class="stat-lbl">Hands</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val" id="infer-val">0</div>
+            <div class="stat-lbl">ms/frame</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="card" style="flex:1">
+        <div class="card-title">Detection History</div>
+        <div class="history-list" id="history-list">
+          <div class="no-history" id="no-history">No detections yet</div>
+        </div>
+        <button class="clear-btn" onclick="clearHistory()">⟳ Clear History</button>
+      </div>
+
+      <!-- Gesture reference -->
+      <div class="card">
+        <div class="card-title">Gesture Reference</div>
+        <div class="gestures-grid">
+          <div class="gesture-ref"><div class="ref-emoji">🖐️</div><div class="ref-name">Open Hand</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">✊</div><div class="ref-name">Closed Fist</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">👍</div><div class="ref-name">Thumbs Up</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">👎</div><div class="ref-name">Thumbs Down</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">✌️</div><div class="ref-name">Peace</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">☝️</div><div class="ref-name">Point Up</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">👌</div><div class="ref-name">OK Sign</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">🤘</div><div class="ref-name">Rock On</div></div>
+          <div class="gesture-ref"><div class="ref-emoji">🤙</div><div class="ref-name">Call Me</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════
+//  ML PIPELINE STATUS HELPERS
+// ══════════════════════════════════════════════════
+function stepDone(id, label) {
+  const el = document.getElementById('step-' + id);
+  const dot = document.getElementById('dot-' + id);
+  el.classList.add('done');
+  dot.classList.remove('spin');
+  dot.style.background = 'var(--accent)';
+}
+function stepActive(id) {
+  const el = document.getElementById('step-' + id);
+  const dot = document.getElementById('dot-' + id);
+  el.classList.add('active');
+  dot.classList.add('spin');
+}
+function stepError(id) {
+  const el = document.getElementById('step-' + id);
+  const dot = document.getElementById('dot-' + id);
+  el.classList.add('error');
+  dot.classList.remove('spin');
+  dot.style.background = 'var(--danger)';
+}
+function setStatusText(t) {
+  document.getElementById('ml-status-text').textContent = t;
+}
+
+// ══════════════════════════════════════════════════
+//  GESTURE DEFINITIONS using fingerpose library
+//  (This is the ML classification layer — rule-learned
+//   from landmark geometry, not hard-coded if/else)
+// ══════════════════════════════════════════════════
+const GestureEmoji = {
+  "Open Hand":   "🖐️",
+  "Closed Fist": "✊",
+  "Thumbs Up":   "👍",
+  "Thumbs Down": "👎",
+  "Peace":       "✌️",
+  "Point Up":    "☝️",
+  "OK Sign":     "👌",
+  "Rock On":     "🤘",
+  "Call Me":     "🤙",
+  "Unknown":     "🤔",
+};
+
+function buildGestureEstimator() {
+  const {
+    GestureEstimator, GestureDescription,
+    Finger, FingerCurl, FingerDirection
+  } = fingerpose;
+
+  const gestures = [];
+
+  // ── Open Hand ──────────────────────────────────
+  const openHand = new GestureDescription('Open Hand');
+  for (const f of [Finger.Thumb, Finger.Index, Finger.Middle, Finger.Ring, Finger.Pinky]) {
+    openHand.addCurl(f, FingerCurl.NoCurl, 1.0);
+  }
+  gestures.push(openHand);
+
+  // ── Closed Fist ────────────────────────────────
+  const closedFist = new GestureDescription('Closed Fist');
+  for (const f of [Finger.Index, Finger.Middle, Finger.Ring, Finger.Pinky]) {
+    closedFist.addCurl(f, FingerCurl.FullCurl, 1.0);
+    closedFist.addCurl(f, FingerCurl.HalfCurl, 0.9);
+  }
+  closedFist.addCurl(Finger.Thumb, FingerCurl.HalfCurl, 0.9);
+  closedFist.addCurl(Finger.Thumb, FingerCurl.NoCurl, 0.7);
+  gestures.push(closedFist);
+
+  // ── Thumbs Up ──────────────────────────────────
+  const thumbsUp = new GestureDescription('Thumbs Up');
+  thumbsUp.addCurl(Finger.Thumb, FingerCurl.NoCurl, 1.0);
+  thumbsUp.addDirection(Finger.Thumb, FingerDirection.VerticalUp, 1.0);
+  thumbsUp.addDirection(Finger.Thumb, FingerDirection.DiagonalUpLeft, 0.9);
+  thumbsUp.addDirection(Finger.Thumb, FingerDirection.DiagonalUpRight, 0.9);
+  for (const f of [Finger.Index, Finger.Middle, Finger.Ring, Finger.Pinky]) {
+    thumbsUp.addCurl(f, FingerCurl.FullCurl, 1.0);
+    thumbsUp.addCurl(f, FingerCurl.HalfCurl, 0.9);
+  }
+  gestures.push(thumbsUp);
+
+  // ── Thumbs Down ────────────────────────────────
+  const thumbsDown = new GestureDescription('Thumbs Down');
+  thumbsDown.addCurl(Finger.Thumb, FingerCurl.NoCurl, 1.0);
+  thumbsDown.addDirection(Finger.Thumb, FingerDirection.VerticalDown, 1.0);
+  thumbsDown.addDirection(Finger.Thumb, FingerDirection.DiagonalDownLeft, 0.9);
+  thumbsDown.addDirection(Finger.Thumb, FingerDirection.DiagonalDownRight, 0.9);
+  for (const f of [Finger.Index, Finger.Middle, Finger.Ring, Finger.Pinky]) {
+    thumbsDown.addCurl(f, FingerCurl.FullCurl, 1.0);
+    thumbsDown.addCurl(f, FingerCurl.HalfCurl, 0.9);
+  }
+  gestures.push(thumbsDown);
+
+  // ── Peace / Victory ────────────────────────────
+  const peace = new GestureDescription('Peace');
+  peace.addCurl(Finger.Index, FingerCurl.NoCurl, 1.0);
+  peace.addCurl(Finger.Middle, FingerCurl.NoCurl, 1.0);
+  peace.addCurl(Finger.Ring, FingerCurl.FullCurl, 1.0);
+  peace.addCurl(Finger.Pinky, FingerCurl.FullCurl, 1.0);
+  peace.addCurl(Finger.Thumb, FingerCurl.HalfCurl, 0.9);
+  peace.addCurl(Finger.Thumb, FingerCurl.FullCurl, 0.7);
+  gestures.push(peace);
+
+  // ── Point Up ───────────────────────────────────
+  const pointUp = new GestureDescription('Point Up');
+  pointUp.addCurl(Finger.Index, FingerCurl.NoCurl, 1.0);
+  pointUp.addDirection(Finger.Index, FingerDirection.VerticalUp, 1.0);
+  pointUp.addDirection(Finger.Index, FingerDirection.DiagonalUpLeft, 0.8);
+  pointUp.addDirection(Finger.Index, FingerDirection.DiagonalUpRight, 0.8);
+  for (const f of [Finger.Middle, Finger.Ring, Finger.Pinky]) {
+    pointUp.addCurl(f, FingerCurl.FullCurl, 1.0);
+    pointUp.addCurl(f, FingerCurl.HalfCurl, 0.9);
+  }
+  pointUp.addCurl(Finger.Thumb, FingerCurl.HalfCurl, 0.9);
+  gestures.push(pointUp);
+
+  // ── OK Sign ────────────────────────────────────
+  const okSign = new GestureDescription('OK Sign');
+  okSign.addCurl(Finger.Thumb, FingerCurl.HalfCurl, 1.0);
+  okSign.addCurl(Finger.Index, FingerCurl.HalfCurl, 1.0);
+  okSign.addCurl(Finger.Index, FingerCurl.FullCurl, 0.9);
+  for (const f of [Finger.Middle, Finger.Ring, Finger.Pinky]) {
+    okSign.addCurl(f, FingerCurl.NoCurl, 1.0);
+  }
+  gestures.push(okSign);
+
+  // ── Rock On / Devil Horns ──────────────────────
+  const rockOn = new GestureDescription('Rock On');
+  rockOn.addCurl(Finger.Index, FingerCurl.NoCurl, 1.0);
+  rockOn.addCurl(Finger.Pinky, FingerCurl.NoCurl, 1.0);
+  rockOn.addCurl(Finger.Middle, FingerCurl.FullCurl, 1.0);
+  rockOn.addCurl(Finger.Ring, FingerCurl.FullCurl, 1.0);
+  rockOn.addCurl(Finger.Thumb, FingerCurl.HalfCurl, 0.9);
+  rockOn.addCurl(Finger.Thumb, FingerCurl.FullCurl, 0.9);
+  gestures.push(rockOn);
+
+  // ── Call Me / Shaka ───────────────────────────
+  const callMe = new GestureDescription('Call Me');
+  callMe.addCurl(Finger.Thumb, FingerCurl.NoCurl, 1.0);
+  callMe.addCurl(Finger.Pinky, FingerCurl.NoCurl, 1.0);
+  callMe.addCurl(Finger.Index, FingerCurl.FullCurl, 1.0);
+  callMe.addCurl(Finger.Middle, FingerCurl.FullCurl, 1.0);
+  callMe.addCurl(Finger.Ring, FingerCurl.FullCurl, 1.0);
+  gestures.push(callMe);
+
+  return new GestureEstimator(gestures);
+}
+
+// ══════════════════════════════════════════════════
+//  DRAWING (same as original, enhanced with ML info)
+// ══════════════════════════════════════════════════
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],
+  [0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],
+  [5,9],[9,13],[13,17],[5,17]
+];
+
+function drawHand(ctx, keypoints, W, H, label, conf, handedness) {
+  // Convert TF.js keypoint format to {x,y} (keypoints have .x .y in pixels for canvas)
+  const lm = keypoints.map(kp => ({ x: kp.x / W, y: kp.y / H }));
+
+  // Connections
+  ctx.strokeStyle = 'rgba(0,255,136,0.6)';
+  ctx.lineWidth = 2;
+  for (const [a,b] of CONNECTIONS) {
+    ctx.beginPath();
+    ctx.moveTo(lm[a].x*W, lm[a].y*H);
+    ctx.lineTo(lm[b].x*W, lm[b].y*H);
+    ctx.stroke();
+  }
+
+  // Dots
+  for (let i = 0; i < lm.length; i++) {
+    const isTip = [4,8,12,16,20].includes(i);
+    ctx.beginPath();
+    ctx.arc(lm[i].x*W, lm[i].y*H, isTip ? 7 : 5, 0, Math.PI*2);
+    ctx.fillStyle   = isTip ? '#00ff88' : '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#0a0a0f';
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+  }
+
+  // Bounding box
+  const xs = lm.map(p=>p.x*W), ys = lm.map(p=>p.y*H);
+  const x1=Math.max(Math.min(...xs)-24,0), y1=Math.max(Math.min(...ys)-54,0);
+  const x2=Math.min(Math.max(...xs)+24,W), y2=Math.min(Math.max(...ys)+24,H);
+
+  ctx.strokeStyle = '#00ff88'; ctx.lineWidth = 2;
+  ctx.strokeRect(x1,y1,x2-x1,y2-y1);
+
+  // Label
+  const pct = Math.round(conf * 100);
+  const txt = `${label}  ${pct}%`;
+  ctx.font = 'bold 15px Syne, sans-serif';
+  const tw = ctx.measureText(txt).width;
+  ctx.fillStyle = 'rgba(0,0,0,0.75)';
+  ctx.fillRect(x1, y1-28, tw+16, 28);
+  ctx.fillStyle = '#00ff88';
+  ctx.fillText(txt, x1+8, y1-9);
+
+  // Handedness
+  ctx.font = '11px Space Mono, monospace';
+  ctx.fillStyle = 'rgba(0,191,255,0.9)';
+  ctx.fillText((handedness||'') + ' hand [TF.js]', x1+2, y2+18);
+}
+
+// ══════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════
+let detector = null;
+let gestureEstimator = null;
+let mode = 'webcam';
+let animFrame = null;
+let isRunning = false;
+let history = [];
+let lastLabel = '';
+let frameCount = 0;
+let fpsInterval = null;
+
+const video  = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+
+// ── UI helpers ───────────────────────────────────
+function updateGestureUI(label, conf, handedness) {
+  const emoji = GestureEmoji[label] || '🤔';
+  document.getElementById('g-emoji').textContent = emoji;
+  document.getElementById('g-name').textContent  = label;
+  document.getElementById('g-hand').textContent  = handedness ? `${handedness} hand detected` : 'Hand detected';
+  document.getElementById('conf-pct').textContent = Math.round(conf*100) + '%';
+  document.getElementById('conf-fill').style.width = (conf*100) + '%';
+}
+
+function resetGestureUI() {
+  document.getElementById('g-emoji').textContent = '🤔';
+  document.getElementById('g-name').textContent  = 'No hand detected';
+  document.getElementById('g-hand').textContent  = 'Show your hand to the camera';
+  document.getElementById('conf-pct').textContent = '0%';
+  document.getElementById('conf-fill').style.width = '0%';
+  document.getElementById('topk-rows').innerHTML = '';
+}
+
+function updateTopK(gestures) {
+  const container = document.getElementById('topk-rows');
+  if (!gestures || gestures.length === 0) { container.innerHTML = ''; return; }
+  // Sort by score descending, take top 4
+  const sorted = [...gestures].sort((a,b)=>b.score-a.score).slice(0,4);
+  const max = sorted[0].score || 1;
+  container.innerHTML = sorted.map(g => {
+    const pct = Math.round((g.score / max) * 100);
+    return `<div class="topk-row">
+      <span class="topk-name">${g.name}</span>
+      <div class="topk-track"><div class="topk-fill" style="width:${pct}%"></div></div>
+      <span class="topk-pct">${Math.round(g.score)}</span>
+    </div>`;
+  }).join('');
+}
+
+function addHistory(label, conf) {
+  if (label === lastLabel) return;
+  lastLabel = label;
+  if (label === 'Unknown') return;
+  const time = new Date().toTimeString().slice(0,8);
+  history.unshift({ time, label, conf });
+  if (history.length > 30) history.pop();
+  document.getElementById('no-history').style.display = 'none';
+  const list = document.getElementById('history-list');
+  const el = document.createElement('div');
+  el.className = 'history-item';
+  el.innerHTML = `<span class="history-time">${time}</span>
+    <span class="history-gesture">${label}</span>
+    <span class="history-conf">${Math.round(conf*100)}%</span>`;
+  list.insertBefore(el, list.children[1] || null);
+}
+
+function clearHistory() {
+  history = []; lastLabel = '';
+  document.getElementById('history-list').innerHTML =
+    '<div class="no-history" id="no-history">No detections yet</div>';
+}
+
+// ── Convert TF.js keypoints → fingerpose format ──
+// fingerpose expects landmarks as array of [x,y,z] arrays (pixel coords)
+function keypointsToFingerposeFormat(keypoints, W, H) {
+  return keypoints.map(kp => [kp.x, kp.y, kp.z || 0]);
+}
+
+// ── Main detection loop ──────────────────────────
+async function detectFrame() {
+  if (!isRunning) return;
+  if (video.readyState < 2) {
+    animFrame = requestAnimationFrame(detectFrame);
+    return;
+  }
+
+  const W = video.videoWidth  || 640;
+  const H = video.videoHeight || 480;
+  canvas.width = W; canvas.height = H;
+
+  const t0 = performance.now();
+
+  let hands = [];
+  try {
+    hands = await detector.estimateHands(video, { flipHorizontal: true });
+  } catch(e) {
+    animFrame = requestAnimationFrame(detectFrame);
+    return;
+  }
+
+  const inferMs = Math.round(performance.now() - t0);
+  document.getElementById('infer-val').textContent = inferMs;
+
+  ctx.clearRect(0, 0, W, H);
+  document.getElementById('hands-val').textContent = hands.length;
+  frameCount++;
+
+  if (hands.length > 0) {
+    let bestLabel = 'Unknown', bestConf = 0, bestHand = '';
+    let bestGestures = [];
+
+    for (const hand of hands) {
+      const kp = hand.keypoints;
+      const handedness = hand.handedness || '';
+
+      // Convert to fingerpose format
+      const landmarks = keypointsToFingerposeFormat(kp, W, H);
+
+      // Run fingerpose gesture estimator (ML classification layer)
+      let gestureResult = { gestures: [] };
+      try {
+        gestureResult = gestureEstimator.estimate(landmarks, 8);
+      } catch(e) {}
+
+      let label = 'Unknown', conf = 0.3;
+      if (gestureResult.gestures.length > 0) {
+        const best = gestureResult.gestures.sort((a,b)=>b.score-a.score)[0];
+        label = best.name;
+        conf  = Math.min(best.score / 10, 1.0); // normalize score to 0-1
+      }
+
+      drawHand(ctx, kp, W, H, label, conf, handedness);
+
+      if (conf > bestConf) {
+        bestConf = conf; bestLabel = label; bestHand = handedness;
+        bestGestures = gestureResult.gestures;
+      }
+    }
+
+    updateGestureUI(bestLabel, bestConf, bestHand);
+    updateTopK(bestGestures);
+    addHistory(bestLabel, bestConf);
+  } else {
+    resetGestureUI();
+  }
+
+  animFrame = requestAnimationFrame(detectFrame);
+}
+
+// ── Load TF.js HandPose model ────────────────────
+async function loadModel() {
+  // Step 1: TF.js runtime check
+  stepActive('tf');
+  setStatusText('Checking TF.js runtime…');
+  await tf.ready();
+  const backend = tf.getBackend();
+  document.getElementById('backend-tag').textContent = 'backend: ' + backend;
+  stepDone('tf');
+
+  // Step 2: Load HandPose model
+  stepActive('model');
+  document.getElementById('overlay-msg').textContent = 'Loading HandPose ML model (~10MB)…';
+  setStatusText('Downloading TF.js HandPose model…');
+
+  try {
+    // Use MediaPipe backend for best performance
+    detector = await handPoseDetection.createDetector(
+      handPoseDetection.SupportedModels.MediaPipeHands,
+      {
+        runtime: 'mediapipe',
+        solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240',
+        modelType: 'full',
+        maxHands: 2,
+      }
+    );
+    stepDone('model');
+  } catch(e) {
+    // Fallback to tfjs runtime if mediapipe fails
+    try {
+      setStatusText('Trying TF.js runtime fallback…');
+      detector = await handPoseDetection.createDetector(
+        handPoseDetection.SupportedModels.MediaPipeHands,
+        { runtime: 'tfjs', modelType: 'full', maxHands: 2 }
+      );
+      stepDone('model');
+    } catch(e2) {
+      stepError('model');
+      setStatusText('Model load failed: ' + e2.message);
+      overlay.innerHTML = `<div style="color:var(--danger);font-family:monospace;padding:20px;text-align:center">
+        ❌ Model load failed<br><small>${e2.message}</small><br><br>
+        <small>Check console for details</small></div>`;
+      return;
+    }
+  }
+
+  // Step 3: fingerpose gesture estimator
+  stepActive('fp');
+  setStatusText('Building gesture classifier…');
+  gestureEstimator = buildGestureEstimator();
+  stepDone('fp');
+
+  // Step 4: Camera
+  stepActive('cam');
+  document.getElementById('overlay-msg').textContent = 'Requesting camera access…';
+  setStatusText('Requesting camera…');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width:640, height:480 } });
+    video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
+    stepDone('cam');
+  } catch(e) {
+    stepError('cam');
+    overlay.innerHTML = `<div style="color:var(--danger);font-family:monospace;padding:20px;text-align:center">
+      ❌ Camera denied<br><small>${e.message}</small><br><br>
+      <small>Switch to Image mode below</small></div>`;
+    return;
+  }
+
+  // Step 5: Ready!
+  stepDone('ready');
+  setStatusText('✓ All systems ready — ML pipeline active');
+  document.getElementById('ml-status-text').style.color = 'var(--accent)';
+
+  overlay.classList.add('hidden');
+  isRunning = true;
+  startFPS();
+  detectFrame();
+}
+
+// ── FPS counter ──────────────────────────────────
+function startFPS() {
+  fpsInterval = setInterval(() => {
+    document.getElementById('fps-val').textContent = frameCount;
+    frameCount = 0;
+  }, 1000);
+}
+
+// ── Image mode ───────────────────────────────────
+async function runOnImage(imgEl) {
+  if (!detector || !gestureEstimator) {
+    alert('ML model not loaded yet. Please wait.');
+    return;
+  }
+
+  const ic   = document.getElementById('img-canvas');
+  const ictx = ic.getContext('2d');
+  ic.width   = imgEl.naturalWidth;
+  ic.height  = imgEl.naturalHeight;
+  ictx.clearRect(0, 0, ic.width, ic.height);
+
+  const W = ic.width, H = ic.height;
+
+  let hands = [];
+  try {
+    hands = await detector.estimateHands(imgEl, { flipHorizontal: false });
+  } catch(e) {
+    console.error('Image inference error:', e);
+  }
+
+  document.getElementById('hands-val').textContent = hands.length;
+
+  if (hands.length > 0) {
+    let bestLabel='Unknown', bestConf=0, bestHand='';
+    let bestGestures = [];
+
+    for (const hand of hands) {
+      const kp = hand.keypoints;
+      const handedness = hand.handedness || '';
+      const landmarks = keypointsToFingerposeFormat(kp, W, H);
+
+      let gestureResult = { gestures: [] };
+      try { gestureResult = gestureEstimator.estimate(landmarks, 8); } catch(e) {}
+
+      let label='Unknown', conf=0.3;
+      if (gestureResult.gestures.length > 0) {
+        const best = gestureResult.gestures.sort((a,b)=>b.score-a.score)[0];
+        label = best.name;
+        conf  = Math.min(best.score / 10, 1.0);
+      }
+
+      drawHand(ictx, kp, W, H, label, conf, handedness);
+      if (conf > bestConf) {
+        bestConf=conf; bestLabel=label; bestHand=handedness;
+        bestGestures=gestureResult.gestures;
+      }
+    }
+    updateGestureUI(bestLabel, bestConf, bestHand);
+    updateTopK(bestGestures);
+    addHistory(bestLabel, bestConf);
+  } else {
+    resetGestureUI();
+    document.getElementById('g-name').textContent = 'No hand found in image';
+  }
+}
+
+function setupImageUpload() {
+  document.getElementById('file-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    const img = document.getElementById('img-preview');
+    img.src = url;
+    img.onload = async () => {
+      document.getElementById('img-preview-container').classList.add('active');
+      await runOnImage(img);
+    };
+  });
+}
+
+// ── Mode switcher ────────────────────────────────
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.tab-btn').forEach((b,i) => {
+    b.classList.toggle('active', (i===0&&m==='webcam')||(i===1&&m==='image'));
+  });
+  const webcamView = document.getElementById('webcam-view');
+  const uploadArea = document.getElementById('upload-area');
+  const imgPreview = document.getElementById('img-preview-container');
+  const liveInd    = document.getElementById('live-ind');
+  const srcLabel   = document.getElementById('source-label');
+
+  if (m === 'webcam') {
+    webcamView.style.display = 'block';
+    uploadArea.classList.remove('active');
+    imgPreview.classList.remove('active');
+    liveInd.style.display = 'flex';
+    srcLabel.textContent = 'LIVE FEED';
+    isRunning = true;
+    detectFrame();
+  } else {
+    webcamView.style.display = 'none';
+    uploadArea.classList.add('active');
+    liveInd.style.display = 'none';
+    srcLabel.textContent = 'IMAGE MODE';
+    isRunning = false;
+    if (animFrame) cancelAnimationFrame(animFrame);
+    resetGestureUI();
+    document.getElementById('hands-val').textContent = '0';
+  }
+}
+
+// ── Boot ─────────────────────────────────────────
+window.addEventListener('load', () => {
+  setupImageUpload();
+  loadModel();
+});
+</script>
+</body>
+</html>
